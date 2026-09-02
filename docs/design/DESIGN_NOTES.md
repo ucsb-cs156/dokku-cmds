@@ -8,7 +8,7 @@ It may or may not work for your own installation of dokku, and we make no promis
 
 If you find it useful for your own installation, great.   If you have suggestions for how to make it more flexible, pull requests are welcome.
 
-## First increment: show-unlinked-dbs.sh
+## First increment: show-unlinked-postgres-dbs.sh
 
 This is intended to show unlinked postgres databases that are not currently being used, and give the option to destroy them, in order to tidy up the server and free up server resources.
 
@@ -34,9 +34,16 @@ There is a confirmation modal that is shown before anything is destroyed.
   Press Escape (or choose Cancel) to exit
   ```
 
-## Second increment: clean-mongo-dbs.sh
+## Second increment: show-unlinked-mongo-dbs.sh
 
-This should work the same as clean-postgres-dbs.sh but should work on mongo databases instead of postgres ones.
+This should work the same as show-unlinked-postgres-dbs.sh but should work on mongo databases instead of postgres ones.
+
+Since postgres and mongo services turned out to have functionally identical dokku commands (`<type>:list`, `<type>:links <service>`, `<type>:destroy <service> --force`, same "=====> ... services" list-header format), the common scan/menu/confirm/destroy logic was extracted into `lib/show-unlinked-db-menu.sh`, a single function `run_unlinked_db_menu` parameterized by two variables the caller sets before sourcing it:
+
+- `SERVICE_CMD` -- the dokku command prefix (`postgres`, `mongo`)
+- `SERVICE_LABEL` -- a human-readable name for dialog text (`Postgres`, `MongoDB`)
+
+`show-unlinked-postgres-dbs.sh` and `show-unlinked-mongo-dbs.sh` are now thin wrappers: set those two variables, source the lib (resolving its path relative to the wrapper's own location via `BASH_SOURCE`), and call `run_unlinked_db_menu "$@"`. Any future bug fix or UI tweak (like the whiptail rendering quirks above) needs to land in the shared lib exactly once.
 
 ## Third increment: clean-dokku-apps.db
 
