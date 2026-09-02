@@ -73,15 +73,33 @@ fetch_db_names() {
     names+=("$line")
   done < <(tail -n +2 <<<"$raw")
 
+  # Note: all progress output below is written to fd 2, not fd 1 -- fd 1 is
+  # reserved for the final list of names, read by the caller via
+  # `mapfile -t db_names < <(fetch_db_names)`. Running a curses dialog (e.g.
+  # --infobox) here, immediately before the --menu dialog in the caller,
+  # has been observed to corrupt the menu's rendering (borders and buttons
+  # draw, but the list items do not) -- so this progress indicator
+  # deliberately uses plain terminal output instead of a curses widget.
   if [ "$SHOW_LINKED" = false ]; then
-    "$DIALOG_CMD" --title "Please Wait" \
-      --infobox "Checking which databases are linked to apps..." 5 60
+    clear >&2
+    local total=${#names[@]}
+    local count=0
+    local bar_width=40
     local unlinked=()
     for name in "${names[@]}"; do
+      count=$((count + 1))
+      local pct=$(( count * 100 / total ))
+      local filled=$(( pct * bar_width / 100 ))
+      local bar
+      printf -v bar '%*s' "$filled" ''
+      bar="${bar// /#}"
+      printf '\rChecking for linked databases: [%-*s] %3d%% (%d/%d) %-30.30s\033[K' \
+        "$bar_width" "$bar" "$pct" "$count" "$total" "$name" >&2
       if [ -z "$(dokku postgres:links "$name" 2>/dev/null)" ]; then
         unlinked+=("$name")
       fi
     done
+    printf '\n' >&2
     names=("${unlinked[@]}")
   fi
 
