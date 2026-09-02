@@ -73,6 +73,7 @@ If destroy is selected, the app should first unlink all linked databases and des
 - **`dokku apps:destroy <app> --force` prints a lot of unrelated-looking "Unlinking from X" lines** for other apps/services during its own internal Docker network teardown (disconnecting other containers from a shared bridge network). This is normal dokku output, not a sign that other apps' real database links were touched -- verified directly (`<type>:app-links` on unrelated apps) that only the destroyed app and its own linked databases were affected.
 - This script was **not** folded into `lib/show-unlinked-db-menu.sh` -- the row shape (composite P/M/name display) and destroy logic (cascading unlink+destroy across two service types, plus an app) are different enough from the single-service-name case that forcing a shared abstraction would have hurt clarity more than the duplication it would have saved.
 
+
 # Fourth increment: clean-dokku.sh
 
 This app should integrate the three earlier ones.
@@ -82,6 +83,12 @@ It should start with a [Refresh List] as before.
 Then, it should show all of the unlinked postgres dbs in one section that starts with a header [Unlinked Postgres Dbs]
 (the header itself does nothing if selected)
 followed by a section that starts with a header [Unlinked Mongo Dbs], followed by a header [All Dokku Apps].
+
+### Planning notes
+
+- **Rows carry an explicit (type, name) tag in parallel arrays**, rather than the type being inferred from the display text -- avoids ambiguity if a Postgres and a Mongo database ever happened to share the same name (they're independent namespaces, so nothing stops that).
+- The scan logic in `lib/show-unlinked-db-menu.sh` and `clean-dokku-apps.sh` will be split into a standalone scan function (returns/populates data) separate from each one's interactive menu loop, so this script can call each scan directly instead of a third copy of the scanning logic. The existing wrapper scripts (`show-unlinked-postgres-dbs.sh`, `show-unlinked-mongo-dbs.sh`, `clean-dokku-apps.sh`) keep working unchanged.
+- Combined startup scan (postgres + mongo + apps) takes roughly the sum of the three individual scans (~25-30s at current data volumes) -- acceptable as a one-time, cached cost. The progress bar spans all three phases so it doesn't look stalled partway through.
 
 # Fifth increment: clean-all-dokkus.sh
 
@@ -101,6 +108,12 @@ This app works exactly like clean-dokku.sh, except that we now have a header
 (all of the output for al three sections)
 etc.
 
+### Planning notes
+
+- **Assumes passwordless SSH access** is already configured from the host running this script to every `dokku-00`..`dokku-18` host. Not something the script needs to set up or check for beyond a clear error if a connection fails.
+- **Per-host scans run in parallel** (background jobs + `wait`), not sequentially, as long as that doesn't add significant complexity. Sequential (worst case ~10 minutes for 19 hosts, each taking as long as increment 4's combined scan) is an acceptable fallback given this tool is run infrequently -- parallelization is a nice-to-have speedup, not a hard requirement gating the increment.
+- `lib/dokku-hosts.sh` holds the host range as a prominent constant, plus a small `run_on_host <host> <dokku-command...>` helper that either execs locally or wraps in `ssh` -- shared with `clean-dokku.sh`'s local-only logic and reused again by `dokku-disk-space.sh` (increment 6).
+- Per-row bookkeeping extends from (type, name) to (host, type, name) triples, so a destroy action targets the right host.
 
 # Sixth increment: dokku-disk-space.sh
 
@@ -108,4 +121,6 @@ This script is intended to be run on a host with ssh access to all of the dokkus
 
 It should ssh into each of the dokkus and run `df`
 
-It should then report any dokkus that have any di
+It should then report any dokkus that have any mounted disk that has more then THRESHOLD used space, where THRESHOLD is 80% by default, but may be specified with a command line parameter, i.e.  --threshold=90
+
+It should also have a --help flag that does the usual thing (explain syntax and purpose)
