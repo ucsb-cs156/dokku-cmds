@@ -16,6 +16,36 @@
 
 set -euo pipefail
 
+case "${1:-}" in
+  -h|--help)
+    cat <<'EOF'
+show-unlinked-dbs.sh
+
+Interactively browse dokku postgres databases that have no app links,
+and destroy a selected one after confirmation. Databases that are
+linked to an app are never shown, since dokku refuses to destroy a
+database that still has links.
+
+The list is scanned once at startup. Select "[ Refresh List ]" (pinned
+at the top of the list) to rescan on demand; destroying a database
+updates the list in place without a full rescan.
+
+Usage:
+  show-unlinked-dbs.sh [-h|--help]
+
+  -h, --help   Show this help message and exit
+EOF
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    echo "Usage: show-unlinked-dbs.sh [-h|--help]" >&2
+    exit 1
+    ;;
+esac
+
 if command -v dialog >/dev/null 2>&1; then
   DIALOG_CMD=dialog
 elif command -v whiptail >/dev/null 2>&1; then
