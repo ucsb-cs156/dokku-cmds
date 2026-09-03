@@ -17,6 +17,83 @@
 # SERVICE_CMD (the dokku command prefix, e.g. "postgres") and
 # SERVICE_LABEL (a human-readable name, e.g. "Postgres") before sourcing,
 # then call run_unlinked_db_menu "$@".
+#
+# Also exposes scan_unlinked_service and destroy_unlinked_service as
+# standalone functions (used directly by clean-dokku.sh, which combines
+# this scan with others into one menu rather than running its own
+# interactive loop per service type).
+
+# scan_unlinked_service <service_cmd> <service_label> <out_array_name>
+#
+# `dokku <service_cmd>:list` prints a "=====> ... services" header line
+# followed by one database name per line (no columns). Populates the
+# named array (via nameref) with just the unlinked ones.
+#
+# Note: all progress output below is written to fd 2, not fd 1 -- fd 1
+# is reserved for normal script output. Running a curses dialog (e.g.
+# --infobox) here, immediately before a --menu dialog, has been
+# observed to corrupt the menu's rendering (borders and buttons draw,
+# but the list items do not) -- so this progress indicator deliberately
+# uses plain terminal output instead of a curses widget.
+scan_unlinked_service() {
+  local svc_cmd="$1" svc_label="$2"
+  local -n out_names="$3"
+
+  local raw
+  raw=$(dokku "${svc_cmd}:list" 2>&1) || raw=""
+
+  if ! grep -q '^=====>' <<<"$raw"; then
+    "$DIALOG_CMD" --title "Error" \
+      --msgbox "Could not list $svc_label services:\n\n${raw}" 15 70
+    exit 1
+  fi
+
+  local all_names=()
+  while IFS= read -r line; do
+    line="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$line")"
+    [ -z "$line" ] && continue
+    all_names+=("$line")
+  done < <(tail -n +2 <<<"$raw")
+
+  clear >&2
+  local total=${#all_names[@]}
+  local count=0
+  local bar_width=40
+  local unlinked=()
+  for name in "${all_names[@]}"; do
+    count=$((count + 1))
+    local pct=0
+    [ "$total" -gt 0 ] && pct=$(( count * 100 / total ))
+    local filled=$(( pct * bar_width / 100 ))
+    local bar
+    printf -v bar '%*s' "$filled" ''
+    bar="${bar// /#}"
+    printf '\rChecking for unlinked %s databases: [%-*s] %3d%% (%d/%d) %-30.30s\033[K' \
+      "$svc_label" "$bar_width" "$bar" "$pct" "$count" "$total" "$name" >&2
+    if [ -z "$(dokku "${svc_cmd}:links" "$name" 2>/dev/null)" ]; then
+      unlinked+=("$name")
+    fi
+  done
+  printf '\n' >&2
+
+  out_names=("${unlinked[@]}")
+}
+
+# destroy_unlinked_service <service_cmd> <service_label> <name>
+#
+# Echoes progress and returns non-zero if the destroy fails.
+destroy_unlinked_service() {
+  local svc_cmd="$1" svc_label="$2" name="$3"
+
+  echo "Destroying $svc_label database '${name}'..."
+  if dokku "${svc_cmd}:destroy" "$name" --force; then
+    echo "'${name}' destroyed."
+    return 0
+  else
+    echo "Failed to destroy '${name}'." >&2
+    return 1
+  fi
+}
 
 run_unlinked_db_menu() {
   local script_name="show-unlinked-${SERVICE_CMD}-dbs.sh"
@@ -71,59 +148,7 @@ EOF
   local REFRESH_LABEL="[ Refresh List ]"
   local db_names=()
 
-  # `dokku <service>:list` prints a "=====> ... services" header line
-  # followed by one database name per line (no columns). Populates the
-  # db_names array (local to run_unlinked_db_menu, visible here via
-  # bash's dynamic scoping) with just the unlinked ones.
-  #
-  # Note: all progress output below is written to fd 2, not fd 1 -- fd 1
-  # is reserved for normal script output. Running a curses dialog (e.g.
-  # --infobox) here, immediately before the --menu dialog below, has
-  # been observed to corrupt the menu's rendering (borders and buttons
-  # draw, but the list items do not) -- so this progress indicator
-  # deliberately uses plain terminal output instead of a curses widget.
-  scan_db_names() {
-    local raw
-    raw=$(dokku "${SERVICE_CMD}:list" 2>&1) || raw=""
-
-    if ! grep -q '^=====>' <<<"$raw"; then
-      "$DIALOG_CMD" --title "Error" \
-        --msgbox "Could not list $SERVICE_LABEL services:\n\n${raw}" 15 70
-      exit 1
-    fi
-
-    local all_names=()
-    while IFS= read -r line; do
-      line="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$line")"
-      [ -z "$line" ] && continue
-      all_names+=("$line")
-    done < <(tail -n +2 <<<"$raw")
-
-    clear >&2
-    local total=${#all_names[@]}
-    local count=0
-    local bar_width=40
-    local unlinked=()
-    for name in "${all_names[@]}"; do
-      count=$((count + 1))
-      local pct=0
-      [ "$total" -gt 0 ] && pct=$(( count * 100 / total ))
-      local filled=$(( pct * bar_width / 100 ))
-      local bar
-      printf -v bar '%*s' "$filled" ''
-      bar="${bar// /#}"
-      printf '\rChecking for unlinked %s databases: [%-*s] %3d%% (%d/%d) %-30.30s\033[K' \
-        "$SERVICE_LABEL" "$bar_width" "$bar" "$pct" "$count" "$total" "$name" >&2
-      if [ -z "$(dokku "${SERVICE_CMD}:links" "$name" 2>/dev/null)" ]; then
-        unlinked+=("$name")
-      fi
-    done
-    printf '\n' >&2
-
-    db_names=("${unlinked[@]}")
-  }
-
-  scan_db_names
+  scan_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" db_names
 
   while true; do
     local menu_items=("$REFRESH_LABEL" "")
@@ -155,7 +180,7 @@ EOF
         "${menu_items[@]}" \
         3>&1 1>&2 2>&3); then
       if [ "$choice" = "$REFRESH_LABEL" ]; then
-        scan_db_names
+        scan_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" db_names
         continue
       fi
     else
@@ -166,16 +191,12 @@ EOF
         --title "Confirm Destroy" \
         --yesno "Are you SURE you want to permanently destroy the $SERVICE_LABEL database:\n\n  ${choice}\n\nThis action cannot be undone." 12 60; then
       clear
-      echo "Destroying $SERVICE_LABEL database '${choice}'..."
-      if dokku "${SERVICE_CMD}:destroy" "$choice" --force; then
-        echo "'${choice}' destroyed."
+      if destroy_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" "$choice"; then
         local remaining=()
         for name in "${db_names[@]}"; do
           [ "$name" != "$choice" ] && remaining+=("$name")
         done
         db_names=("${remaining[@]}")
-      else
-        echo "Failed to destroy '${choice}'." >&2
       fi
       read -r -p "Press Enter to continue..." _
     fi
