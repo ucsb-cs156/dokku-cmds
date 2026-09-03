@@ -84,7 +84,11 @@ HEADER_LABEL="P M App Name"
 app_rows=()
 app_names=()
 
-scan_dokku_apps app_rows app_names
+if ! scan_dokku_apps app_rows app_names; then
+  "$DIALOG_CMD" --title "Error" \
+    --msgbox "Could not list apps. Scroll back in the terminal for details." 10 70
+  exit 1
+fi
 
 while true; do
   menu_items=("$HEADER_LABEL" "" "$REFRESH_LABEL" "")
@@ -115,7 +119,11 @@ while true; do
       "${menu_items[@]}" \
       3>&1 1>&2 2>&3); then
     if [ "$choice" = "$REFRESH_LABEL" ]; then
-      scan_dokku_apps app_rows app_names
+      if ! scan_dokku_apps app_rows app_names; then
+        "$DIALOG_CMD" --title "Error" \
+          --msgbox "Could not list apps. Scroll back in the terminal for details." 10 70
+        exit 1
+      fi
       continue
     fi
     if [ "$choice" = "$HEADER_LABEL" ]; then

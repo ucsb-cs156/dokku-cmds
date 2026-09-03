@@ -21,13 +21,24 @@
 # Also exposes scan_unlinked_service and destroy_unlinked_service as
 # standalone functions (used directly by clean-dokku.sh, which combines
 # this scan with others into one menu rather than running its own
-# interactive loop per service type).
+# interactive loop per service type, and by clean-all-dokkus.sh, which
+# runs them against a remote host via run_dokku -- see lib/dokku-hosts.sh).
+
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$LIB_DIR/dokku-hosts.sh"
 
 # scan_unlinked_service <service_cmd> <service_label> <out_array_name>
 #
 # `dokku <service_cmd>:list` prints a "=====> ... services" header line
 # followed by one database name per line (no columns). Populates the
 # named array (via nameref) with just the unlinked ones.
+#
+# On failure (e.g. the list command errors, or a remote host via
+# run_dokku is unreachable), prints a message to fd 2, sets the output
+# array empty, and returns non-zero -- it's up to the caller to decide
+# how to surface that (an interactive caller can show its own dialog;
+# a background/parallel caller, which must never pop a dialog itself,
+# can just note the failure).
 #
 # Note: all progress output below is written to fd 2, not fd 1 -- fd 1
 # is reserved for normal script output. Running a curses dialog (e.g.
@@ -40,12 +51,12 @@ scan_unlinked_service() {
   local -n out_names="$3"
 
   local raw
-  raw=$(dokku "${svc_cmd}:list" 2>&1) || raw=""
+  raw=$(run_dokku "${svc_cmd}:list" 2>&1) || raw=""
 
   if ! grep -q '^=====>' <<<"$raw"; then
-    "$DIALOG_CMD" --title "Error" \
-      --msgbox "Could not list $svc_label services:\n\n${raw}" 15 70
-    exit 1
+    echo "Error: could not list $svc_label services:${raw:+ }$raw" >&2
+    out_names=()
+    return 1
   fi
 
   local all_names=()
@@ -70,13 +81,14 @@ scan_unlinked_service() {
     bar="${bar// /#}"
     printf '\rChecking for unlinked %s databases: [%-*s] %3d%% (%d/%d) %-30.30s\033[K' \
       "$svc_label" "$bar_width" "$bar" "$pct" "$count" "$total" "$name" >&2
-    if [ -z "$(dokku "${svc_cmd}:links" "$name" 2>/dev/null)" ]; then
+    if [ -z "$(run_dokku "${svc_cmd}:links" "$name" 2>/dev/null)" ]; then
       unlinked+=("$name")
     fi
   done
   printf '\n' >&2
 
   out_names=("${unlinked[@]}")
+  return 0
 }
 
 # destroy_unlinked_service <service_cmd> <service_label> <name>
@@ -86,7 +98,7 @@ destroy_unlinked_service() {
   local svc_cmd="$1" svc_label="$2" name="$3"
 
   echo "Destroying $svc_label database '${name}'..."
-  if dokku "${svc_cmd}:destroy" "$name" --force; then
+  if run_dokku "${svc_cmd}:destroy" "$name" --force; then
     echo "'${name}' destroyed."
     return 0
   else
@@ -148,7 +160,11 @@ EOF
   local REFRESH_LABEL="[ Refresh List ]"
   local db_names=()
 
-  scan_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" db_names
+  if ! scan_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" db_names; then
+    "$DIALOG_CMD" --title "Error" \
+      --msgbox "Could not list $SERVICE_LABEL services. Scroll back in the terminal for details." 10 70
+    exit 1
+  fi
 
   while true; do
     local menu_items=("$REFRESH_LABEL" "")
@@ -180,7 +196,11 @@ EOF
         "${menu_items[@]}" \
         3>&1 1>&2 2>&3); then
       if [ "$choice" = "$REFRESH_LABEL" ]; then
-        scan_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" db_names
+        if ! scan_unlinked_service "$SERVICE_CMD" "$SERVICE_LABEL" db_names; then
+          "$DIALOG_CMD" --title "Error" \
+            --msgbox "Could not list $SERVICE_LABEL services. Scroll back in the terminal for details." 10 70
+          exit 1
+        fi
         continue
       fi
     else

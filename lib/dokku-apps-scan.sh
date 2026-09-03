@@ -5,11 +5,12 @@
 # Shared logic for scanning all dokku apps together with how many
 # Postgres/Mongo databases each is linked to, and for destroying an
 # app (unlinking and destroying its own linked databases first). Used
-# directly by clean-dokku-apps.sh, and by clean-dokku.sh as part of its
-# combined view.
-#
-# Callers must set DIALOG_CMD before calling scan_dokku_apps (used to
-# report a scan failure).
+# directly by clean-dokku-apps.sh, by clean-dokku.sh as part of its
+# combined view, and by clean-all-dokkus.sh (via run_dokku against a
+# remote host -- see lib/dokku-hosts.sh).
+
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$LIB_DIR/dokku-hosts.sh"
 
 _dokku_apps_link_marker() {
   local count="$1"
@@ -31,6 +32,13 @@ _dokku_apps_link_marker() {
 # "<P> <M> <appname>" display strings and out_names_array with the
 # matching bare app names (same order/index).
 #
+# On failure (e.g. the list command errors, or a remote host via
+# run_dokku is unreachable), prints a message to fd 2, sets both output
+# arrays empty, and returns non-zero -- it's up to the caller to decide
+# how to surface that (an interactive caller can show its own dialog; a
+# background/parallel caller, which must never pop a dialog itself, can
+# just note the failure).
+#
 # Note: all progress output below is written to fd 2, not fd 1 -- see
 # lib/show-unlinked-db-menu.sh for why this avoids a curses --infobox
 # immediately before a --menu dialog.
@@ -39,12 +47,13 @@ scan_dokku_apps() {
   local -n out_names="$2"
 
   local raw
-  raw=$(dokku apps:list 2>&1) || raw=""
+  raw=$(run_dokku apps:list 2>&1) || raw=""
 
   if ! grep -q '^=====>' <<<"$raw"; then
-    "$DIALOG_CMD" --title "Error" \
-      --msgbox "Could not list apps:\n\n${raw}" 15 70
-    exit 1
+    echo "Error: could not list apps:${raw:+ }$raw" >&2
+    out_rows=()
+    out_names=()
+    return 1
   fi
 
   local all_apps=()
@@ -74,8 +83,8 @@ scan_dokku_apps() {
       "$bar_width" "$bar" "$pct" "$count" "$total" "$app" >&2
 
     local pcount mcount
-    pcount=$(dokku postgres:app-links "$app" 2>/dev/null | grep -c .) || pcount=0
-    mcount=$(dokku mongo:app-links "$app" 2>/dev/null | grep -c .) || mcount=0
+    pcount=$(run_dokku postgres:app-links "$app" 2>/dev/null | grep -c .) || pcount=0
+    mcount=$(run_dokku mongo:app-links "$app" 2>/dev/null | grep -c .) || mcount=0
 
     local pchar mchar
     pchar=$(_dokku_apps_link_marker "$pcount")
@@ -85,6 +94,7 @@ scan_dokku_apps() {
     out_names+=("$app")
   done
   printf '\n' >&2
+  return 0
 }
 
 # destroy_dokku_app <app>
@@ -98,12 +108,12 @@ destroy_dokku_app() {
   local app="$1"
 
   local pg_links
-  pg_links=$(dokku postgres:app-links "$app" 2>/dev/null || true)
+  pg_links=$(run_dokku postgres:app-links "$app" 2>/dev/null || true)
   if [ -n "$pg_links" ]; then
     while IFS= read -r db; do
       [ -z "$db" ] && continue
-      if dokku postgres:unlink "$db" "$app" >/dev/null 2>&1; then
-        if dokku postgres:destroy "$db" --force >/dev/null 2>&1; then
+      if run_dokku postgres:unlink "$db" "$app" >/dev/null 2>&1; then
+        if run_dokku postgres:destroy "$db" --force >/dev/null 2>&1; then
           echo "  Destroyed postgres database '$db'."
         else
           echo "  Could not destroy postgres database '$db' (still linked to another app?)."
@@ -115,12 +125,12 @@ destroy_dokku_app() {
   fi
 
   local mongo_links
-  mongo_links=$(dokku mongo:app-links "$app" 2>/dev/null || true)
+  mongo_links=$(run_dokku mongo:app-links "$app" 2>/dev/null || true)
   if [ -n "$mongo_links" ]; then
     while IFS= read -r db; do
       [ -z "$db" ] && continue
-      if dokku mongo:unlink "$db" "$app" >/dev/null 2>&1; then
-        if dokku mongo:destroy "$db" --force >/dev/null 2>&1; then
+      if run_dokku mongo:unlink "$db" "$app" >/dev/null 2>&1; then
+        if run_dokku mongo:destroy "$db" --force >/dev/null 2>&1; then
           echo "  Destroyed mongo database '$db'."
         else
           echo "  Could not destroy mongo database '$db' (still linked to another app?)."
@@ -131,7 +141,7 @@ destroy_dokku_app() {
     done <<< "$mongo_links"
   fi
 
-  if dokku apps:destroy "$app" --force; then
+  if run_dokku apps:destroy "$app" --force; then
     echo "'${app}' destroyed."
     return 0
   else

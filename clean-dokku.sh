@@ -115,14 +115,22 @@ rebuild_combo() {
   done
 }
 
+# Returns non-zero if any of the three scans failed (details already on
+# fd 2 from the failing scan itself).
 scan_all() {
-  scan_unlinked_service postgres Postgres pg_names
-  scan_unlinked_service mongo MongoDB mongo_names
-  scan_dokku_apps app_rows app_names
+  local ok=0
+  scan_unlinked_service postgres Postgres pg_names || ok=1
+  scan_unlinked_service mongo MongoDB mongo_names || ok=1
+  scan_dokku_apps app_rows app_names || ok=1
   rebuild_combo
+  return "$ok"
 }
 
-scan_all
+if ! scan_all; then
+  "$DIALOG_CMD" --title "Error" \
+    --msgbox "Could not complete the scan. Scroll back in the terminal for details." 10 70
+  exit 1
+fi
 
 while true; do
   menu_items=()
@@ -159,7 +167,11 @@ while true; do
 
   case "$choice" in
     "$REFRESH_LABEL")
-      scan_all
+      if ! scan_all; then
+        "$DIALOG_CMD" --title "Error" \
+          --msgbox "Could not complete the scan. Scroll back in the terminal for details." 10 70
+        exit 1
+      fi
       continue
       ;;
     "$PG_HEADER"|"$MONGO_HEADER"|"$APPS_HEADER")
