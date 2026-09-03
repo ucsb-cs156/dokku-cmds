@@ -166,6 +166,13 @@ EOF
     exit 1
   fi
 
+  # Which tag to highlight when the menu (re)opens. Defaults to keeping
+  # the cursor on whatever was just selected; after a destroy, moved to
+  # whatever now sits at that same position (typically the next item),
+  # so working through a long list top-to-bottom doesn't mean scrolling
+  # back to the top after every single destroy.
+  local default_item="$REFRESH_LABEL"
+
   while true; do
     local menu_items=("$REFRESH_LABEL" "")
     for name in "${db_names[@]}"; do
@@ -192,6 +199,7 @@ EOF
         --backtitle "Show Unlinked $SERVICE_LABEL Databases" \
         --title "Select an Unlinked $SERVICE_LABEL Database to Destroy" \
         --menu "$prompt" \
+        --default-item "$default_item" \
         "$box_height" 70 "$menu_height" \
         "${menu_items[@]}" \
         3>&1 1>&2 2>&3); then
@@ -201,11 +209,18 @@ EOF
             --msgbox "Could not list $SERVICE_LABEL services. Scroll back in the terminal for details." 10 70
           exit 1
         fi
+        default_item="$REFRESH_LABEL"
         continue
       fi
+      default_item="$choice"
     else
       break
     fi
+
+    local idx=-1
+    for i in "${!db_names[@]}"; do
+      [ "${db_names[$i]}" = "$choice" ] && idx=$i && break
+    done
 
     if "$DIALOG_CMD" --clear \
         --title "Confirm Destroy" \
@@ -217,6 +232,13 @@ EOF
           [ "$name" != "$choice" ] && remaining+=("$name")
         done
         db_names=("${remaining[@]}")
+        if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#db_names[@]}" ]; then
+          default_item="${db_names[$idx]}"
+        elif [ "${#db_names[@]}" -gt 0 ]; then
+          default_item="${db_names[$((${#db_names[@]} - 1))]}"
+        else
+          default_item="$REFRESH_LABEL"
+        fi
       fi
       read -r -p "Press Enter to continue..." _
     fi

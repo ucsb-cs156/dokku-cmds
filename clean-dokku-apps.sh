@@ -90,6 +90,13 @@ if ! scan_dokku_apps app_rows app_names; then
   exit 1
 fi
 
+# Which tag to highlight when the menu (re)opens. Defaults to keeping
+# the cursor on whatever was just selected; after a destroy, moved to
+# whatever now sits at that same position (typically the next item),
+# so working through a long list top-to-bottom doesn't mean scrolling
+# back to the top after every single destroy.
+default_item="$REFRESH_LABEL"
+
 while true; do
   menu_items=("$HEADER_LABEL" "" "$REFRESH_LABEL" "")
   for row in "${app_rows[@]}"; do
@@ -114,7 +121,7 @@ while true; do
       --backtitle "Clean Dokku Apps" \
       --title "Select a Dokku App to Destroy" \
       --menu "$prompt" \
-      --default-item "$REFRESH_LABEL" \
+      --default-item "$default_item" \
       "$box_height" 70 "$menu_height" \
       "${menu_items[@]}" \
       3>&1 1>&2 2>&3); then
@@ -124,16 +131,23 @@ while true; do
           --msgbox "Could not list apps. Scroll back in the terminal for details." 10 70
         exit 1
       fi
+      default_item="$REFRESH_LABEL"
       continue
     fi
     if [ "$choice" = "$HEADER_LABEL" ]; then
       continue
     fi
+    default_item="$choice"
   else
     break
   fi
 
   app="${choice:4}"
+
+  idx=-1
+  for i in "${!app_names[@]}"; do
+    [ "${app_names[$i]}" = "$app" ] && idx=$i && break
+  done
 
   if "$DIALOG_CMD" --clear \
       --title "Confirm Destroy" \
@@ -152,6 +166,13 @@ while true; do
       done
       app_rows=("${new_rows[@]}")
       app_names=("${new_names[@]}")
+      if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#app_rows[@]}" ]; then
+        default_item="${app_rows[$idx]}"
+      elif [ "${#app_rows[@]}" -gt 0 ]; then
+        default_item="${app_rows[$((${#app_rows[@]} - 1))]}"
+      else
+        default_item="$REFRESH_LABEL"
+      fi
     fi
     read -r -p "Press Enter to continue..." _
   fi

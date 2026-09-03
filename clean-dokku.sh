@@ -132,6 +132,13 @@ if ! scan_all; then
   exit 1
 fi
 
+# Which tag to highlight when the menu (re)opens. Defaults to keeping
+# the cursor on whatever was just selected; after a destroy, moved to
+# whatever now sits at that same position in combo_tags (typically the
+# next item), so working through a long list top-to-bottom doesn't
+# mean scrolling back to the top after every single destroy.
+default_item="$REFRESH_LABEL"
+
 while true; do
   menu_items=()
   for tag in "${combo_tags[@]}"; do
@@ -156,14 +163,19 @@ while true; do
       --backtitle "Clean Dokku (Postgres + Mongo + Apps)" \
       --title "Select an Item to Destroy" \
       --menu "$prompt" \
-      --default-item "$REFRESH_LABEL" \
+      --default-item "$default_item" \
       "$box_height" 70 "$menu_height" \
       "${menu_items[@]}" \
       3>&1 1>&2 2>&3); then
-    :
+    default_item="$choice"
   else
     break
   fi
+
+  idx=-1
+  for i in "${!combo_tags[@]}"; do
+    [ "${combo_tags[$i]}" = "$choice" ] && idx=$i && break
+  done
 
   case "$choice" in
     "$REFRESH_LABEL")
@@ -172,6 +184,7 @@ while true; do
           --msgbox "Could not complete the scan. Scroll back in the terminal for details." 10 70
         exit 1
       fi
+      default_item="$REFRESH_LABEL"
       continue
       ;;
     "$PG_HEADER"|"$MONGO_HEADER"|"$APPS_HEADER")
@@ -190,6 +203,11 @@ while true; do
           done
           pg_names=("${remaining[@]}")
           rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
         fi
         read -r -p "Press Enter to continue..." _
       fi
@@ -207,6 +225,11 @@ while true; do
           done
           mongo_names=("${remaining[@]}")
           rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
         fi
         read -r -p "Press Enter to continue..." _
       fi
@@ -230,6 +253,11 @@ while true; do
           app_rows=("${new_rows[@]}")
           app_names=("${new_names[@]}")
           rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
         fi
         read -r -p "Press Enter to continue..." _
       fi

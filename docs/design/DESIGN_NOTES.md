@@ -33,6 +33,7 @@ There is a confirmation modal that is shown before anything is destroyed.
   Press Enter (or choose OK) to select a db to delete
   Press Escape (or choose Cancel) to exit
   ```
+- **Preserve cursor position across a destroy, via `--default-item`.** Without it, `--menu` always highlights the first item, so working through a long list top-to-bottom means scrolling back down after every single destroy -- painful even for one host, and a real problem across `clean-all-dokkus.sh`'s 19-host list. Track the selected tag's index in the *current* list before acting on it; after a destroy, once the list is rebuilt, set `--default-item` to whatever tag now sits at that same index (the item that was originally *after* the deleted one, since everything shifts up by one) -- clamping to the last item if the deleted one was last, or to `[ Refresh List ]` if the list is now empty. When nothing was destroyed (a header was selected, or the confirmation was cancelled), just default to the tag that was already selected, so the cursor doesn't move at all. Applied to all four interactive scripts (`run_unlinked_db_menu`, `clean-dokku-apps.sh`, `clean-dokku.sh`, `clean-all-dokkus.sh`) for consistency, even though only the last one was reported as a real pain point.
 
 ## Second increment: show-unlinked-mongo-dbs.sh
 

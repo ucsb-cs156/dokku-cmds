@@ -232,6 +232,13 @@ scan_all() {
 
 scan_all
 
+# Which tag to highlight when the menu (re)opens. Defaults to keeping
+# the cursor on whatever was just selected; after a destroy, moved to
+# whatever now sits at that same position in combo_tags (typically the
+# next item), so scrolling through all 19 hosts and deleting things as
+# you go doesn't mean scrolling all the way back after every destroy.
+default_item="$REFRESH_LABEL"
+
 while true; do
   menu_items=()
   for tag in "${combo_tags[@]}"; do
@@ -256,18 +263,24 @@ while true; do
       --backtitle "Clean All Dokkus (Postgres + Mongo + Apps, every host)" \
       --title "Select an Item to Destroy" \
       --menu "$prompt" \
-      --default-item "$REFRESH_LABEL" \
+      --default-item "$default_item" \
       "$box_height" 70 "$menu_height" \
       "${menu_items[@]}" \
       3>&1 1>&2 2>&3); then
-    :
+    default_item="$choice"
   else
     break
   fi
 
+  idx=-1
+  for i in "${!combo_tags[@]}"; do
+    [ "${combo_tags[$i]}" = "$choice" ] && idx=$i && break
+  done
+
   case "$choice" in
     "$REFRESH_LABEL")
       scan_all
+      default_item="$REFRESH_LABEL"
       continue
       ;;
     \[*\])
@@ -289,6 +302,11 @@ while true; do
           done
           pg_rows=("${remaining[@]}")
           rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
         fi
         unset DOKKU_TARGET_HOST
         read -r -p "Press Enter to continue..." _
@@ -310,6 +328,11 @@ while true; do
           done
           mongo_rows=("${remaining[@]}")
           rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
         fi
         unset DOKKU_TARGET_HOST
         read -r -p "Press Enter to continue..." _
@@ -332,6 +355,11 @@ while true; do
           done
           app_rows=("${remaining[@]}")
           rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
         fi
         unset DOKKU_TARGET_HOST
         read -r -p "Press Enter to continue..." _
