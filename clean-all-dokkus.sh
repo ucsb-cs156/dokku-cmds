@@ -152,7 +152,13 @@ _scan_one_host_to_file() {
     for n in "${pg[@]}"; do echo "PG:$n"; done
     for n in "${mongo[@]}"; do echo "MONGO:$n"; done
     for j in "${!names[@]}"; do echo "APP:${rows[$j]}"; done
-  } > "$outfile"
+  } > "$outfile.tmp"
+  # Renamed into place only once fully written, so the main process can
+  # tell "started" (nothing written yet, or the file doesn't exist)
+  # apart from "finished" (the real filename exists) by polling for it
+  # -- a plain `> "$outfile"` redirection would instead create the
+  # (empty) file the instant this job starts, well before it's done.
+  mv "$outfile.tmp" "$outfile"
 }
 
 scan_all() {
@@ -160,7 +166,6 @@ scan_all() {
   tmpdir=$(mktemp -d)
 
   local host_count=$(( DOKKU_HOST_LAST - DOKKU_HOST_FIRST + 1 ))
-  echo "Scanning $host_count dokku hosts in parallel, please wait..." >&2
 
   local i hostnum host
   for ((i = DOKKU_HOST_FIRST; i <= DOKKU_HOST_LAST; i++)); do
@@ -168,6 +173,29 @@ scan_all() {
     host="${DOKKU_HOST_PREFIX}${hostnum}${DOKKU_HOST_SUFFIX}"
     _scan_one_host_to_file "$host" "$tmpdir/$hostnum" >/dev/null 2>&1 &
   done
+
+  # Live progress while the 19 background jobs run: this can take over
+  # a minute, and with each job's own progress bar discarded (19
+  # interleaved bars would be unreadable), a single static "please
+  # wait" message for that whole stretch looks indistinguishable from a
+  # hang. Poll for completion markers (see _scan_one_host_to_file's
+  # write-then-rename) instead of a real progress bar, since we can't
+  # know in advance how far along any individual host's scan is.
+  local start_ts elapsed finished bar_width filled bar
+  start_ts=$(date +%s)
+  bar_width=40
+  while :; do
+    finished=$(find "$tmpdir" -maxdepth 1 -type f ! -name '*.tmp' 2>/dev/null | wc -l)
+    elapsed=$(( $(date +%s) - start_ts ))
+    filled=$(( finished * bar_width / host_count ))
+    printf -v bar '%*s' "$filled" ''
+    bar="${bar// /#}"
+    printf '\rScanning %d dokku hosts in parallel: [%-*s] %d/%d complete (%ds elapsed)\033[K' \
+      "$host_count" "$bar_width" "$bar" "$finished" "$host_count" "$elapsed" >&2
+    [ "$finished" -ge "$host_count" ] && break
+    sleep 1
+  done
+  printf '\n' >&2
   wait
 
   pg_rows=()
