@@ -53,7 +53,11 @@ scan_unlinked_service() {
   local raw
   raw=$(run_dokku "${svc_cmd}:list" 2>&1) || raw=""
 
-  if ! grep -q '^=====>' <<<"$raw"; then
+  # A host with zero services of this type doesn't print the usual
+  # "=====> ... services" header at all -- just a single "There are no
+  # ... services" line, with no header for `tail -n +2` to skip past.
+  # That's a valid empty result, not a failure.
+  if ! grep -q '^=====>' <<<"$raw" && ! grep -qi 'there are no' <<<"$raw"; then
     echo "Error: could not list $svc_label services:${raw:+ }$raw" >&2
     out_names=()
     return 1
@@ -63,6 +67,10 @@ scan_unlinked_service() {
   while IFS= read -r line; do
     line="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$line")"
     [ -z "$line" ] && continue
+    # dokku's own informational/warning lines (e.g. "!     You haven't
+    # deployed any applications yet") start with "!" -- never a real
+    # service name, but easy to mistake for one otherwise.
+    [[ "$line" == "!"* ]] && continue
     all_names+=("$line")
   done < <(tail -n +2 <<<"$raw")
 

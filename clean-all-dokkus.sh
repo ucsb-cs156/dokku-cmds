@@ -20,6 +20,15 @@
 # row is prefixed with its 2-digit host number in addition to the P/M
 # type marker used by clean-dokku.sh -- see DESIGN_NOTES.md.
 #
+# Every host except dokku-00 (production + staff QA) additionally gets
+# a "[Destroy Everything on <host>]" entry right after its own header,
+# for wiping a student team host clean between turnovers: destroys
+# every app (which cascades to that app's own linked databases) plus
+# any still-unlinked Postgres/Mongo database. This is gated by both a
+# whiptail confirmation and a second, typed-hostname confirmation at
+# the plain terminal prompt, since it is far more destructive than any
+# single-item destroy in this repo.
+#
 # The full scan runs once at startup (and again only if
 # "[ Refresh List ]" is selected) -- within a session, state is assumed
 # not to change except through this script's own destroy actions,
@@ -47,6 +56,12 @@ startup scan fast.
 
 Selecting a database or an app destroys it (on its own host) after
 confirmation, exactly as in clean-dokku.sh.
+
+Every host except dokku-00 also gets a "[Destroy Everything on
+<host>]" entry, for wiping a student team host clean between
+turnovers: destroys every app and every still-unlinked Postgres/Mongo
+database on that host. Requires a whiptail confirmation followed by
+typing the host's name at a plain terminal prompt.
 
 The list is scanned once at startup. Select "[ Refresh List ]" (pinned
 at the top) to rescan on demand; destroying an item updates the list
@@ -103,6 +118,12 @@ declare -A unreachable_hosts=()
 
 combo_tags=()
 
+# dokku-00 hosts production services and staff QA deployments -- never
+# offer to wipe it wholesale. dokku-01..dokku-18 are student team
+# hosts that turn over several times a year, which is exactly what
+# "[Destroy Everything on ...]" (below) is for.
+PROD_HOSTNUM="00"
+
 rebuild_combo() {
   combo_tags=("$REFRESH_LABEL")
   local i hostnum host row
@@ -114,6 +135,9 @@ rebuild_combo() {
       continue
     fi
     combo_tags+=("[$host]")
+    if [ "$hostnum" != "$PROD_HOSTNUM" ]; then
+      combo_tags+=("[Destroy Everything on $host]")
+    fi
     combo_tags+=("$PG_HEADER")
     for row in "${pg_rows[@]}"; do
       [[ "$row" == "$hostnum "* ]] && combo_tags+=("$row")
@@ -282,6 +306,107 @@ while true; do
       scan_all
       default_item="$REFRESH_LABEL"
       continue
+      ;;
+    "[Destroy Everything on "*"]")
+      host="${choice#\[Destroy Everything on }"
+      host="${host%\]}"
+      hostnum="${host#${DOKKU_HOST_PREFIX}}"
+      hostnum="${hostnum%${DOKKU_HOST_SUFFIX}}"
+
+      if "$DIALOG_CMD" --clear \
+          --title "Confirm: Destroy EVERYTHING on $host" \
+          --yesno "Are you SURE you want to permanently destroy:\n\n  - ALL apps on $host\n  - ALL unlinked Postgres databases on $host\n  - ALL unlinked Mongo databases on $host\n\n(Destroying an app also destroys its own linked databases.)\n\nThis action cannot be undone." 18 70; then
+        clear
+        echo "You are about to PERMANENTLY DESTROY EVERYTHING on:"
+        echo
+        echo "    $host"
+        echo
+        echo "This means every app and every Postgres/Mongo database on that host."
+        echo
+        read -r -p "Type the host name exactly to confirm ($host): " typed
+
+        if [ "$typed" = "$host" ]; then
+          echo
+          echo "Confirmed. Destroying everything on $host..."
+          DOKKU_TARGET_HOST="$host"
+
+          # Destroy every app first -- destroy_dokku_app cascades into
+          # unlinking and destroying each app's own linked databases.
+          # (`|| true` on every call below: this whole sequence must
+          # keep going even if one item fails, since under `set -e` a
+          # single bare failing command here would otherwise silently
+          # abort everything after it -- including the cache updates
+          # at the end, leaving the in-memory list stale.)
+          wipe_app_rows=(); wipe_app_names=()
+          scan_dokku_apps wipe_app_rows wipe_app_names || true
+
+          for a in "${wipe_app_names[@]}"; do
+            echo "Destroying app '$a'..."
+            destroy_dokku_app "$a" || true
+          done
+
+          # Sweep for anything left over, *after* every app is gone --
+          # rather than destroying only what scanned as unlinked before
+          # any apps were touched. A database can become newly unlinked
+          # partway through the app-destroy loop above (e.g. it was
+          # shared by several apps), and a one-time upfront scan would
+          # miss that; once every app on the host is gone, whatever
+          # Postgres/Mongo database remains is definitionally orphaned,
+          # so this just destroys everything postgres:list/mongo:list
+          # still report, no link-checking needed.
+          echo
+          echo "Destroying any remaining Postgres databases on $host..."
+          remaining_pg_all=$(run_dokku postgres:list 2>/dev/null | tail -n +2) || remaining_pg_all=""
+          while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            destroy_unlinked_service postgres Postgres "$n" || true
+          done <<< "$remaining_pg_all"
+
+          echo
+          echo "Destroying any remaining Mongo databases on $host..."
+          remaining_mongo_all=$(run_dokku mongo:list 2>/dev/null | tail -n +2) || remaining_mongo_all=""
+          while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            destroy_unlinked_service mongo MongoDB "$n" || true
+          done <<< "$remaining_mongo_all"
+
+          echo
+          echo "Running 'dokku cleanup --global' on $host to free up resources..."
+          run_dokku cleanup --global || true
+
+          unset DOKKU_TARGET_HOST
+          echo
+          echo "Done destroying everything on $host."
+
+          remaining=()
+          for r in "${pg_rows[@]}"; do
+            [[ "$r" != "$hostnum "* ]] && remaining+=("$r")
+          done
+          pg_rows=("${remaining[@]}")
+
+          remaining=()
+          for r in "${mongo_rows[@]}"; do
+            [[ "$r" != "$hostnum "* ]] && remaining+=("$r")
+          done
+          mongo_rows=("${remaining[@]}")
+
+          remaining=()
+          for r in "${app_rows[@]}"; do
+            [[ "$r" != "$hostnum "* ]] && remaining+=("$r")
+          done
+          app_rows=("${remaining[@]}")
+
+          rebuild_combo
+          if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#combo_tags[@]}" ]; then
+            default_item="${combo_tags[$idx]}"
+          else
+            default_item="${combo_tags[$((${#combo_tags[@]} - 1))]}"
+          fi
+        else
+          echo "Confirmation did not match. Aborting; nothing was destroyed."
+        fi
+        read -r -p "Press Enter to continue..." _
+      fi
       ;;
     \[*\])
       continue

@@ -49,7 +49,12 @@ scan_dokku_apps() {
   local raw
   raw=$(run_dokku apps:list 2>&1) || raw=""
 
-  if ! grep -q '^=====>' <<<"$raw"; then
+  # Unlike postgres/mongo, a host with zero apps still prints the
+  # "=====> My Apps" header, but followed by a "!  You haven't deployed
+  # any applications yet" line instead of any app names -- filtered out
+  # below alongside any other "!"-prefixed dokku informational line, so
+  # it doesn't get mistaken for a real (and later "destroyable") app.
+  if ! grep -q '^=====>' <<<"$raw" && ! grep -qi 'there are no' <<<"$raw"; then
     echo "Error: could not list apps:${raw:+ }$raw" >&2
     out_rows=()
     out_names=()
@@ -60,6 +65,7 @@ scan_dokku_apps() {
   while IFS= read -r line; do
     line="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$line")"
     [ -z "$line" ] && continue
+    [[ "$line" == "!"* ]] && continue
     all_apps+=("$line")
   done < <(tail -n +2 <<<"$raw")
 
