@@ -113,6 +113,8 @@ offending_hosts=()
 declare -A offending_lines=()
 declare -A shared_pct=()
 declare -A shared_mnt=()
+overall_max_pct=-1
+overall_max_info=""
 
 for ((i = DOKKU_HOST_FIRST; i <= DOKKU_HOST_LAST; i++)); do
   hostnum=$(printf '%02d' "$i")
@@ -129,6 +131,19 @@ for ((i = DOKKU_HOST_FIRST; i <= DOKKU_HOST_LAST; i++)); do
     [ -z "$fs" ] && continue
     pct_num="${pct%\%}"
     [[ "$pct_num" =~ ^[0-9]+$ ]] || continue
+
+    # Tracked for every filesystem seen, regardless of the threshold,
+    # so that when nothing crosses it, the report can still say how
+    # close the closest one came.
+    if [ "$pct_num" -gt "$overall_max_pct" ]; then
+      overall_max_pct="$pct_num"
+      if [[ "$fstype" =~ $NETWORK_FS_TYPES ]]; then
+        overall_max_info="${pct} on ${mnt} (${fs}, shared)"
+      else
+        overall_max_info="${pct} on ${mnt} (${fs} on ${host})"
+      fi
+    fi
+
     [ "$pct_num" -gt "$THRESHOLD" ] || continue
 
     if [[ "$fstype" =~ $NETWORK_FS_TYPES ]]; then
@@ -154,6 +169,9 @@ echo
 
 if [ "${#offending_hosts[@]}" -eq 0 ] && [ "${#shared_pct[@]}" -eq 0 ]; then
   echo "No filesystem (local or shared) is more than ${THRESHOLD}% used."
+  if [ "$overall_max_pct" -ge 0 ]; then
+    echo "Highest usage seen: ${overall_max_info}"
+  fi
 fi
 
 if [ "${#shared_pct[@]}" -gt 0 ]; then
