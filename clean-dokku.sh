@@ -16,13 +16,23 @@
 # assumed not to change except through this script's own destroy
 # actions, which are reflected locally without a full rescan.
 #
-# Requires: dokku (reachable via ssh/CLI on this host), whiptail or dialog
+# By default, operates on this local machine. Pass -H/--host <hostname>
+# to instead operate on a remote dokku host via passwordless ssh (see
+# lib/dokku-hosts.sh's run_dokku, which every scan/destroy call already
+# goes through) -- e.g. `clean-dokku.sh -H dokku-05.cs.ucsb.edu`.
+#
+# Requires: whiptail or dialog. When run locally (no -H/--host), also
+# requires dokku on this host; with -H/--host, this control host needs
+# only passwordless SSH access to the target, not dokku itself.
 
 set -euo pipefail
 
-case "${1:-}" in
-  -h|--help)
-    cat <<'EOF'
+TARGET_HOST=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      cat <<'EOF'
 clean-dokku.sh
 
 Interactively browse, in one combined list:
@@ -40,21 +50,33 @@ The list is scanned once at startup. Select "[ Refresh List ]" (pinned
 at the top) to rescan on demand; destroying an item updates the list
 in place without a full rescan.
 
-Usage:
-  clean-dokku.sh [-h|--help]
+By default, operates on this local machine. Pass -H/--host to instead
+operate on a remote dokku host via passwordless ssh.
 
-  -h, --help   Show this help message and exit
+Usage:
+  clean-dokku.sh [-H hostname | --host hostname] [-h|--help]
+
+  -H, --host hostname   Operate on this host via ssh instead of locally
+  -h, --help            Show this help message and exit
 EOF
-    exit 0
-    ;;
-  "")
-    ;;
-  *)
-    echo "Unknown option: $1" >&2
-    echo "Usage: clean-dokku.sh [-h|--help]" >&2
-    exit 1
-    ;;
-esac
+      exit 0
+      ;;
+    -H|--host)
+      if [ -z "${2:-}" ]; then
+        echo "Error: $1 requires a hostname argument." >&2
+        echo "Usage: clean-dokku.sh [-H hostname | --host hostname] [-h|--help]" >&2
+        exit 1
+      fi
+      TARGET_HOST="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: clean-dokku.sh [-H hostname | --host hostname] [-h|--help]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if command -v dialog >/dev/null 2>&1; then
   DIALOG_CMD=dialog
@@ -66,8 +88,9 @@ else
   exit 1
 fi
 
-if ! command -v dokku >/dev/null 2>&1; then
+if [ -z "$TARGET_HOST" ] && ! command -v dokku >/dev/null 2>&1; then
   echo "Error: 'dokku' command not found on this host." >&2
+  echo "  (Pass -H/--host <hostname> to operate on a remote host instead.)" >&2
   exit 1
 fi
 
@@ -76,6 +99,10 @@ trap 'clear' EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/show-unlinked-db-menu.sh"
 source "$SCRIPT_DIR/lib/dokku-apps-scan.sh"
+
+if [ -n "$TARGET_HOST" ]; then
+  DOKKU_TARGET_HOST="$TARGET_HOST"
+fi
 
 REFRESH_LABEL="[ Refresh List ]"
 PG_HEADER="[ Unlinked Postgres Dbs ]"
@@ -160,7 +187,7 @@ while true; do
   prompt="Up/Down arrows (or PageUp/PageDown) to scroll \nTab to move between fields\nPress Enter (or choose OK) to select an item to destroy\nPress Escape (or choose Cancel) to exit"
 
   if choice=$("$DIALOG_CMD" --clear \
-      --backtitle "Clean Dokku (Postgres + Mongo + Apps)" \
+      --backtitle "Clean Dokku (Postgres + Mongo + Apps) -- ${TARGET_HOST:-local machine}" \
       --title "Select an Item to Destroy" \
       --menu "$prompt" \
       --default-item "$default_item" \
