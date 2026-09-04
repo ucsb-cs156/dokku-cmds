@@ -21,6 +21,13 @@
 # lib/dokku-hosts.sh's run_dokku, which every scan/destroy call already
 # goes through) -- e.g. `clean-dokku.sh -H dokku-05.cs.ucsb.edu`.
 #
+# When -H/--host names a host that isn't in lib/dokku-hosts.sh's
+# DOKKU_PROTECTED_HOSTS, the menu also gets a
+# "[Destroy Everything on <host>]" entry -- see clean-all-dokkus.sh,
+# which offers the same thing per-host; this is the single-host
+# equivalent, gated the same way (a whiptail confirmation, then a
+# second, typed-hostname confirmation at a plain terminal prompt).
+#
 # Requires: whiptail or dialog. When run locally (no -H/--host), also
 # requires dokku on this host; with -H/--host, this control host needs
 # only passwordless SSH access to the target, not dokku itself.
@@ -51,7 +58,12 @@ at the top) to rescan on demand; destroying an item updates the list
 in place without a full rescan.
 
 By default, operates on this local machine. Pass -H/--host to instead
-operate on a remote dokku host via passwordless ssh.
+operate on a remote dokku host via passwordless ssh, in which case (if
+the host isn't protected -- see lib/dokku-hosts.sh) the menu also
+offers a "[Destroy Everything on <host>]" entry: destroys every app
+and every remaining Postgres/Mongo database on that host, gated by a
+whiptail confirmation followed by typing the host's exact name at a
+plain terminal prompt.
 
 Usage:
   clean-dokku.sh [-H hostname | --host hostname] [-h|--help]
@@ -126,7 +138,11 @@ app_names=()
 combo_tags=()
 
 rebuild_combo() {
-  combo_tags=("$REFRESH_LABEL" "$PG_HEADER")
+  combo_tags=("$REFRESH_LABEL")
+  if [ -n "$TARGET_HOST" ] && ! is_protected_host "$TARGET_HOST"; then
+    combo_tags+=("[Destroy Everything on $TARGET_HOST]")
+  fi
+  combo_tags+=("$PG_HEADER")
   local name
   for name in "${pg_names[@]}"; do
     combo_tags+=("P $name")
@@ -216,6 +232,74 @@ while true; do
       ;;
     "$PG_HEADER"|"$MONGO_HEADER"|"$APPS_HEADER")
       continue
+      ;;
+    "[Destroy Everything on "*"]")
+      if "$DIALOG_CMD" --clear \
+          --title "Confirm: Destroy EVERYTHING on $TARGET_HOST" \
+          --yesno "Are you SURE you want to permanently destroy:\n\n  - ALL apps on $TARGET_HOST\n  - ALL unlinked Postgres databases on $TARGET_HOST\n  - ALL unlinked Mongo databases on $TARGET_HOST\n\n(Destroying an app also destroys its own linked databases.)\n\nThis action cannot be undone." 18 70; then
+        clear
+        echo "You are about to PERMANENTLY DESTROY EVERYTHING on:"
+        echo
+        echo "    $TARGET_HOST"
+        echo
+        echo "This means every app and every Postgres/Mongo database on that host."
+        echo
+        read -r -p "Type the host name exactly to confirm ($TARGET_HOST): " typed
+
+        if [ "$typed" = "$TARGET_HOST" ]; then
+          echo
+          echo "Confirmed. Destroying everything on $TARGET_HOST..."
+
+          # `|| true` on every call below: this whole sequence must keep
+          # going even if one item fails, since under `set -e` a single
+          # bare failing command here would otherwise silently abort
+          # everything after it -- see DESIGN_NOTES.md (increment 5).
+          wipe_app_rows=(); wipe_app_names=()
+          scan_dokku_apps wipe_app_rows wipe_app_names || true
+
+          for a in "${wipe_app_names[@]}"; do
+            echo "Destroying app '$a'..."
+            destroy_dokku_app "$a" || true
+          done
+
+          # Sweep for anything left over, *after* every app is gone --
+          # see DESIGN_NOTES.md (increment 5) on why a one-time upfront
+          # "unlinked" scan can miss a database that's shared by several
+          # apps and only becomes unlinked partway through the loop above.
+          echo
+          echo "Destroying any remaining Postgres databases on $TARGET_HOST..."
+          remaining_pg_all=$(run_dokku postgres:list 2>/dev/null | tail -n +2) || remaining_pg_all=""
+          while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            destroy_unlinked_service postgres Postgres "$n" || true
+          done <<< "$remaining_pg_all"
+
+          echo
+          echo "Destroying any remaining Mongo databases on $TARGET_HOST..."
+          remaining_mongo_all=$(run_dokku mongo:list 2>/dev/null | tail -n +2) || remaining_mongo_all=""
+          while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            destroy_unlinked_service mongo MongoDB "$n" || true
+          done <<< "$remaining_mongo_all"
+
+          echo
+          echo "Running 'dokku cleanup --global' on $TARGET_HOST to free up resources..."
+          run_dokku cleanup --global || true
+
+          echo
+          echo "Done destroying everything on $TARGET_HOST."
+
+          pg_names=()
+          mongo_names=()
+          app_rows=()
+          app_names=()
+          rebuild_combo
+          default_item="$REFRESH_LABEL"
+        else
+          echo "Confirmation did not match. Aborting; nothing was destroyed."
+        fi
+        read -r -p "Press Enter to continue..." _
+      fi
       ;;
     "P "*)
       name="${choice#P }"

@@ -20,8 +20,10 @@
 # row is prefixed with its 2-digit host number in addition to the P/M
 # type marker used by clean-dokku.sh -- see DESIGN_NOTES.md.
 #
-# Every host except dokku-00 (production + staff QA) additionally gets
-# a "[Destroy Everything on <host>]" entry right after its own header,
+# Every host except those listed in lib/dokku-hosts.sh's
+# DOKKU_PROTECTED_HOSTS (e.g. dokku-00, production + staff QA)
+# additionally gets a "[Destroy Everything on <host>]" entry right
+# after its own header,
 # for wiping a student team host clean between turnovers: destroys
 # every app (which cascades to that app's own linked databases) plus
 # any still-unlinked Postgres/Mongo database. This is gated by both a
@@ -57,11 +59,12 @@ startup scan fast.
 Selecting a database or an app destroys it (on its own host) after
 confirmation, exactly as in clean-dokku.sh.
 
-Every host except dokku-00 also gets a "[Destroy Everything on
-<host>]" entry, for wiping a student team host clean between
-turnovers: destroys every app and every still-unlinked Postgres/Mongo
-database on that host. Requires a whiptail confirmation followed by
-typing the host's name at a plain terminal prompt.
+Every host not listed in lib/dokku-hosts.sh's DOKKU_PROTECTED_HOSTS
+also gets a "[Destroy Everything on <host>]" entry, for wiping a
+student team host clean between turnovers: destroys every app and
+every still-unlinked Postgres/Mongo database on that host. Requires a
+whiptail confirmation followed by typing the host's name at a plain
+terminal prompt.
 
 The list is scanned once at startup. Select "[ Refresh List ]" (pinned
 at the top) to rescan on demand; destroying an item updates the list
@@ -118,11 +121,11 @@ declare -A unreachable_hosts=()
 
 combo_tags=()
 
-# dokku-00 hosts production services and staff QA deployments -- never
-# offer to wipe it wholesale. dokku-01..dokku-18 are student team
-# hosts that turn over several times a year, which is exactly what
+# Protected hosts (lib/dokku-hosts.sh's DOKKU_PROTECTED_HOSTS -- e.g.
+# dokku-00, which hosts production services and staff QA deployments)
+# never offer to be wiped wholesale. The rest are student team hosts
+# that turn over several times a year, which is exactly what
 # "[Destroy Everything on ...]" (below) is for.
-PROD_HOSTNUM="00"
 
 rebuild_combo() {
   combo_tags=("$REFRESH_LABEL")
@@ -135,7 +138,7 @@ rebuild_combo() {
       continue
     fi
     combo_tags+=("[$host]")
-    if [ "$hostnum" != "$PROD_HOSTNUM" ]; then
+    if ! is_protected_host "$host"; then
       combo_tags+=("[Destroy Everything on $host]")
     fi
     combo_tags+=("$PG_HEADER")
