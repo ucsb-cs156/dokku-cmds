@@ -28,6 +28,12 @@
 # equivalent, gated the same way (a whiptail confirmation, then a
 # second, typed-hostname confirmation at a plain terminal prompt).
 #
+# Always (local or -H/--host, protected or not), the menu also has a
+# "[ Destroy Apps Matching Substring ]" entry: prompts for a substring,
+# shows every app whose name contains it (plain, case-sensitive) in a
+# checklist with all of them pre-checked, confirms, and then destroys
+# each checked app exactly as selecting it individually would.
+#
 # Requires: whiptail or dialog. When run locally (no -H/--host), also
 # requires dokku on this host; with -H/--host, this control host needs
 # only passwordless SSH access to the target, not dokku itself.
@@ -64,6 +70,12 @@ offers a "[Destroy Everything on <host>]" entry: destroys every app
 and every remaining Postgres/Mongo database on that host, gated by a
 whiptail confirmation followed by typing the host's exact name at a
 plain terminal prompt.
+
+"[ Destroy Apps Matching Substring ]" (always offered) prompts for a
+substring, lists every app whose name contains it (plain, case-sensitive
+match) in a checklist with all of them pre-checked, asks for
+confirmation, and then destroys each checked app exactly as selecting
+it individually would (including its own linked databases).
 
 Usage:
   clean-dokku.sh [-H hostname | --host hostname] [-h|--help]
@@ -117,6 +129,7 @@ if [ -n "$TARGET_HOST" ]; then
 fi
 
 REFRESH_LABEL="[ Refresh List ]"
+SUBSTRING_LABEL="[ Destroy Apps Matching Substring ]"
 PG_HEADER="[ Unlinked Postgres Dbs ]"
 MONGO_HEADER="[ Unlinked Mongo Dbs ]"
 APPS_HEADER="[ All Dokku Apps ]"
@@ -138,7 +151,7 @@ app_names=()
 combo_tags=()
 
 rebuild_combo() {
-  combo_tags=("$REFRESH_LABEL")
+  combo_tags=("$REFRESH_LABEL" "$SUBSTRING_LABEL")
   if [ -n "$TARGET_HOST" ] && ! is_protected_host "$TARGET_HOST"; then
     combo_tags+=("[Destroy Everything on $TARGET_HOST]")
   fi
@@ -298,6 +311,141 @@ while true; do
         else
           echo "Confirmation did not match. Aborting; nothing was destroyed."
         fi
+        read -r -p "Press Enter to continue..." _
+      fi
+      ;;
+    "$SUBSTRING_LABEL")
+      # Everything here works off the in-memory app_names/app_rows from
+      # the last scan -- no dokku calls until the actual destroy.
+      if ! substring=$("$DIALOG_CMD" --clear \
+          --title "Destroy Apps Matching Substring" \
+          --inputbox "Enter a substring. Every app whose name contains it (case-sensitive) will be listed for you to confirm before anything is destroyed.\n\nLeave blank or choose Cancel to go back." \
+          12 70 \
+          3>&1 1>&2 2>&3); then
+        continue
+      fi
+      if [ -z "$substring" ]; then
+        continue
+      fi
+
+      match_names=()
+      match_rows=()
+      for i in "${!app_names[@]}"; do
+        if [[ "${app_names[$i]}" == *"$substring"* ]]; then
+          match_names+=("${app_names[$i]}")
+          match_rows+=("${app_rows[$i]}")
+        fi
+      done
+
+      if [ "${#match_names[@]}" -eq 0 ]; then
+        "$DIALOG_CMD" --clear --title "No Matches" \
+          --msgbox "No apps contain the substring:\n\n  ${substring}\n\nNothing was destroyed." 11 60
+        continue
+      fi
+
+      # Checklist: tag = bare app name (what we act on), item = that
+      # app's P/M link markers from the main menu, so the row reads the
+      # same way it does there. Every match starts checked; the user
+      # can untick a stray hit before confirming.
+      check_items=()
+      for i in "${!match_names[@]}"; do
+        check_items+=("${match_names[$i]}" "${match_rows[$i]:0:3}" on)
+      done
+
+      item_count=${#match_names[@]}
+      menu_height=$(( item_count < 15 ? item_count : 15 ))
+      term_lines=$(tput lines 2>/dev/null || echo 24)
+      box_height=$(( menu_height + 11 ))
+      max_box_height=$(( term_lines - 1 ))
+      if [ "$box_height" -gt "$max_box_height" ]; then
+        box_height=$max_box_height
+        menu_height=$(( box_height - 11 ))
+        [ "$menu_height" -lt 1 ] && menu_height=1
+      fi
+
+      check_prompt="${#match_names[@]} app(s) contain \"${substring}\" (columns: P M).\nSpace to untick/tick an app, Up/Down to move\nTab to move between fields\nPress Enter (or choose OK) to continue, Escape (or Cancel) to go back"
+
+      if ! selected_raw=$("$DIALOG_CMD" --clear \
+          --backtitle "Clean Dokku (Postgres + Mongo + Apps) -- ${TARGET_HOST:-local machine}" \
+          --title "Apps Matching \"${substring}\"" \
+          --separate-output \
+          --checklist "$check_prompt" \
+          "$box_height" 70 "$menu_height" \
+          "${check_items[@]}" \
+          3>&1 1>&2 2>&3); then
+        continue
+      fi
+
+      selected_names=()
+      while IFS= read -r n; do
+        [ -z "$n" ] && continue
+        selected_names+=("$n")
+      done <<< "$selected_raw"
+
+      if [ "${#selected_names[@]}" -eq 0 ]; then
+        "$DIALOG_CMD" --clear --title "Nothing Selected" \
+          --msgbox "No apps were left checked.\n\nNothing was destroyed." 9 60
+        continue
+      fi
+
+      # The confirmation names every app when the list is short; past
+      # that, the user has just seen (and ticked) the full list in the
+      # checklist, so a count plus the first few is enough to keep the
+      # yesno from overflowing its box.
+      confirm_list=""
+      shown=0
+      for n in "${selected_names[@]}"; do
+        if [ "$shown" -ge 10 ] && [ "${#selected_names[@]}" -gt 12 ]; then
+          confirm_list+="  ... and $(( ${#selected_names[@]} - shown )) more (all shown in the checklist)\n"
+          break
+        fi
+        confirm_list+="  $n\n"
+        shown=$(( shown + 1 ))
+      done
+      confirm_lines=$(( shown < 12 ? shown : 12 ))
+      [ "$shown" -lt "${#selected_names[@]}" ] && confirm_lines=$(( confirm_lines + 1 ))
+      confirm_height=$(( confirm_lines + 11 ))
+      [ "$confirm_height" -gt "$max_box_height" ] && confirm_height=$max_box_height
+
+      if "$DIALOG_CMD" --clear \
+          --title "Confirm: Destroy ${#selected_names[@]} App(s)" \
+          --yesno "Are you SURE you want to permanently destroy these ${#selected_names[@]} app(s):\n\n${confirm_list}\nThis will also unlink and destroy any Postgres/Mongo databases linked only to each of these apps.\n\nThis action cannot be undone." \
+          "$confirm_height" 70; then
+        clear
+        echo "Destroying ${#selected_names[@]} app(s) matching \"${substring}\"..."
+        echo
+
+        # One stubborn app must not abort the rest (see DESIGN_NOTES.md,
+        # increment 5, on set -e) -- hence the if, not a bare call.
+        destroyed_names=()
+        for a in "${selected_names[@]}"; do
+          echo "Destroying app '$a'..."
+          if destroy_dokku_app "$a"; then
+            destroyed_names+=("$a")
+          fi
+          echo
+        done
+
+        echo "Destroyed ${#destroyed_names[@]} of ${#selected_names[@]} app(s)."
+
+        if [ "${#destroyed_names[@]}" -gt 0 ]; then
+          new_rows=()
+          new_names=()
+          for i in "${!app_names[@]}"; do
+            keep=1
+            for d in "${destroyed_names[@]}"; do
+              [ "${app_names[$i]}" = "$d" ] && keep=0 && break
+            done
+            if [ "$keep" -eq 1 ]; then
+              new_rows+=("${app_rows[$i]}")
+              new_names+=("${app_names[$i]}")
+            fi
+          done
+          app_rows=("${new_rows[@]}")
+          app_names=("${new_names[@]}")
+          rebuild_combo
+        fi
+        default_item="$SUBSTRING_LABEL"
         read -r -p "Press Enter to continue..." _
       fi
       ;;
